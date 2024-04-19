@@ -45,10 +45,7 @@ class ActivationsStore:
     ) -> "ActivationsStore":
         cached_activations_path = cfg.cached_activations_path
         # set cached_activations_path to None if we're not using cached activations
-        if (
-            isinstance(cfg, LanguageModelSAERunnerConfig)
-            and not cfg.use_cached_activations
-        ):
+        if isinstance(cfg, LanguageModelSAERunnerConfig) and not cfg.use_cached_activations:
             cached_activations_path = None
         return cls(
             model=model,
@@ -127,9 +124,7 @@ class ActivationsStore:
             self.is_dataset_tokenized = False
             self.tokens_column = "text"
         else:
-            raise ValueError(
-                "Dataset must have a 'tokens', 'input_ids', or 'text' column."
-            )
+            raise ValueError("Dataset must have a 'tokens', 'input_ids', or 'text' column.")
         self.iterable_dataset = iter(self.dataset)  # Reset iterator after checking
 
         if cached_activations_path is not None:  # EDIT: load from multi-layer acts
@@ -186,10 +181,12 @@ class ActivationsStore:
         # pbar = tqdm(total=batch_size, desc="Filling batches")
         while batch_tokens.shape[0] < batch_size:
             tokens = self._get_next_dataset_tokens()
-            token_len = tokens.shape[0]
+            # token_len = tokens.shape[0]
+            batch_tokens = torch.cat((batch_tokens, tokens[:context_size].unsqueeze(0)), dim=0)
+            continue
 
             # TODO: Fix this so that we are limiting how many tokens we get from the same context.
-            assert self.model.tokenizer is not None  # keep pyright happy
+            # assert self.model.tokenizer is not None  # keep pyright happy
             while token_len > 0 and batch_tokens.shape[0] < batch_size:
                 # Space left in the current batch
                 space_left = context_size - current_length
@@ -209,34 +206,35 @@ class ActivationsStore:
                     token_len -= space_left
 
                     # only add BOS if it's not already the first token
-                    if self.prepend_bos:
-                        bos_token_id_tensor = torch.tensor(
-                            [self.model.tokenizer.bos_token_id],
-                            device=tokens.device,
-                            dtype=torch.long,
-                        )
-                        if tokens[0] != bos_token_id_tensor:
-                            tokens = torch.cat(
-                                (
-                                    bos_token_id_tensor,
-                                    tokens,
-                                ),
-                                dim=0,
-                            )
-                            token_len += 1
+                    # if self.prepend_bos: # TODO fix this
+                    #     bos_token_id_tensor = torch.tensor(
+                    #         [self.model.tokenizer.bos_token_id],
+                    #         device=tokens.device,
+                    #         dtype=torch.long,
+                    #     )
+                    #     if tokens[0] != bos_token_id_tensor:
+                    #         tokens = torch.cat(
+                    #             (
+                    #                 bos_token_id_tensor,
+                    #                 tokens,
+                    #             ),
+                    #             dim=0,
+                    #         )
+                    #         token_len += 1
                     current_length = context_size
 
                 # If a batch is full, concatenate and move to next batch
                 if current_length == context_size:
                     full_batch = torch.cat(current_batch, dim=0)
-                    batch_tokens = torch.cat(
-                        (batch_tokens, full_batch.unsqueeze(0)), dim=0
-                    )
+                    batch_tokens = torch.cat((batch_tokens, full_batch.unsqueeze(0)), dim=0)
                     current_batch = []
                     current_length = 0
 
             # pbar.n = batch_tokens.shape[0]
             # pbar.refresh()
+
+        assert batch_tokens[0][0].item() == 15, f"BOS token not found at the beginning of the batch"
+
         return batch_tokens[:batch_size]
 
     def get_activations(self, batch_tokens: torch.Tensor):
@@ -257,9 +255,7 @@ class ActivationsStore:
         )[1]
         activations_list = [layerwise_activations[act_name] for act_name in act_names]
         if self.hook_point_head_index is not None:
-            activations_list = [
-                act[:, :, self.hook_point_head_index] for act in activations_list
-            ]
+            activations_list = [act[:, :, self.hook_point_head_index] for act in activations_list]
         elif activations_list[0].ndim > 3:  # if we have a head dimension
             # flatten the head dimension
             activations_list = [
@@ -291,12 +287,8 @@ class ActivationsStore:
 
             # Assume activations for different layers are stored separately and need to be combined
             while n_tokens_filled < buffer_size:
-                if not os.path.exists(
-                    f"{self.cached_activations_path}/{self.next_cache_idx}.pt"
-                ):
-                    print(
-                        "\n\nWarning: Ran out of cached activation files earlier than expected."
-                    )
+                if not os.path.exists(f"{self.cached_activations_path}/{self.next_cache_idx}.pt"):
+                    print("\n\nWarning: Ran out of cached activation files earlier than expected.")
                     print(
                         f"Expected to have {buffer_size} activations, but only found {n_tokens_filled}."
                     )
@@ -309,17 +301,15 @@ class ActivationsStore:
                     new_buffer = new_buffer[:n_tokens_filled, ...]
                     return new_buffer
 
-                activations = torch.load(
-                    f"{self.cached_activations_path}/{self.next_cache_idx}.pt"
-                )
+                activations = torch.load(f"{self.cached_activations_path}/{self.next_cache_idx}.pt")
                 taking_subset_of_file = False
                 if n_tokens_filled + activations.shape[0] > buffer_size:
                     activations = activations[: buffer_size - n_tokens_filled, ...]
                     taking_subset_of_file = True
 
-                new_buffer[
-                    n_tokens_filled : n_tokens_filled + activations.shape[0], ...
-                ] = activations
+                new_buffer[n_tokens_filled : n_tokens_filled + activations.shape[0], ...] = (
+                    activations
+                )
 
                 if taking_subset_of_file:
                     self.next_idx_within_buffer = activations.shape[0]
@@ -342,9 +332,9 @@ class ActivationsStore:
         for refill_batch_idx_start in refill_iterator:
             refill_batch_tokens = self.get_batch_tokens()
             refill_activations = self.get_activations(refill_batch_tokens)
-            new_buffer[
-                refill_batch_idx_start : refill_batch_idx_start + batch_size, ...
-            ] = refill_activations
+            new_buffer[refill_batch_idx_start : refill_batch_idx_start + batch_size, ...] = (
+                refill_activations
+            )
 
             # pbar.update(1)
 
@@ -412,9 +402,7 @@ class ActivationsStore:
                 move_to_device=True,
                 prepend_bos=self.prepend_bos,
             ).squeeze(0)
-            assert (
-                len(tokens.shape) == 1
-            ), f"tokens.shape should be 1D but was {tokens.shape}"
+            assert len(tokens.shape) == 1, f"tokens.shape should be 1D but was {tokens.shape}"
         else:
             tokens = torch.tensor(
                 next(self.iterable_dataset)[self.tokens_column],
